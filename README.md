@@ -12,6 +12,18 @@ smaragda.ts    ERP kernel (entities, genera, actions, relationships, processes, 
 server.ts      MCP server exposing the kernel over HTTP with OAuth
 ```
 
+## The Memory Palace
+
+The most distinctive feature of Smaragda is its **memory palace** — a spatial navigation layer that gives each workspace a persistent, explorable space. AI agents build the palace as they work — creating rooms, writing scrolls, placing NPCs with dialogue trees, and linking entities into the spatial layout. The result is a navigable, text-adventure-style representation of everything the agent has learned and organized.
+
+**Rooms** have vivid narrative descriptions, numbered action menus, portals to other rooms, and scrolls pinned to the walls. Actions can navigate between rooms, query entities, or display static content. Room descriptions support live entity references (`*GenusName:EntityName*`) and portal links (`[room-slug]prose[/]`) that resolve to interactive elements.
+
+**NPCs** are characters that live in rooms and carry branching dialogue trees. Each conversation node can reference entities, require previous nodes to be visited first, and unlock new dialogue paths — creating progressive disclosure of information through natural conversation.
+
+**Scrolls** are dated notes attached to rooms — session logs, design decisions, reference material. They persist across sessions and give agents (and humans) a way to leave context for future visits.
+
+Navigate the palace yourself at `http://localhost:3000/palace` when the server is running. The web interface provides a read-only view of rooms, scrolls, NPCs, entities, and tasks. Agents interact with the palace through the `palace_action` MCP tool using numbered actions or verb commands (`go`, `look`, `examine`, `talk`, `search`).
+
 ## Quick Start
 
 Requires [Bun](https://bun.sh) v1.0+.
@@ -23,8 +35,8 @@ bun test
 # Start the MCP server (creates smaragda.db in the current directory)
 bun server.ts
 
-# Or use libraries.ts standalone — just copy it into your project
-import { ulid, sqliteOpen, mcpServer } from "./libraries";
+# Browse the palace web UI
+open http://localhost:3000/palace
 ```
 
 The MCP server listens on port 3000 by default. Configure via environment variables:
