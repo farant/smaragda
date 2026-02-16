@@ -1,0 +1,11 @@
+*.db
+*.db-shm
+*.db-wal
+node_modules
+.env
+cli
+
+# Deployment / infrastructure (local only)
+deploy.sh
+infra/
+smaragda-plan.md
