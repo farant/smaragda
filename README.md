@@ -12,6 +12,30 @@ smaragda.ts    ERP kernel (entities, genera, actions, relationships, processes, 
 server.ts      MCP server exposing the kernel over HTTP with OAuth
 ```
 
+## Quick Start
+
+Requires [Bun](https://bun.sh) v1.0+.
+
+```bash
+# Run the test suite
+bun test
+
+# Start the MCP server (creates smaragda.db in the current directory)
+bun server.ts
+
+# Or use libraries.ts standalone — just copy it into your project
+import { ulid, sqliteOpen, mcpServer } from "./libraries";
+```
+
+The MCP server listens on port 3000 by default. Configure via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | HTTP port |
+| `DB_PATH` | `smaragda.db` | SQLite database path |
+| `AUTH_TOKEN` | auto-generated | Bearer token for authentication |
+| `ORIGIN` | `http://localhost:PORT` | Public origin for OAuth metadata |
+
 ## Philosophy
 
 - **Single-file modules.** `libraries.ts` and `smaragda.ts` are each a single file organized into greppable sections. No build step, no bundler, no external dependencies beyond Bun built-ins.
