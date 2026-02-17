@@ -213,6 +213,10 @@ interface NpcConversationState {
   visible_options: { index: number; node_id: string; prompt: string }[];
 }
 
+interface ScrollPileState {
+  scrolls: PalaceScroll[];
+}
+
 interface SessionContext {
   workspace_id: string | null;
   current_branch: string;
@@ -222,6 +226,7 @@ interface SessionContext {
   palace_last_results: { id: string; name: string }[];
   palace_room_manifest: PalaceRoomManifest | null;
   palace_npc_conversation: NpcConversationState | null;
+  palace_scroll_pile: ScrollPileState | null;
   shown_tips: Set<number>;
 }
 
@@ -246,6 +251,7 @@ function _deserializeSession(json: string): SessionContext {
     palace_last_results: raw.palace_last_results ?? [],
     palace_room_manifest: raw.palace_room_manifest ?? null,
     palace_npc_conversation: raw.palace_npc_conversation ?? null,
+    palace_scroll_pile: raw.palace_scroll_pile ?? null,
     shown_tips: new Set(raw.shown_tips ?? []),
   };
 }
@@ -266,7 +272,7 @@ function _loadSession(sessionId: string): SessionContext | null {
 }
 
 function _getSessionContext(): SessionContext {
-  const defaultCtx = (): SessionContext => ({ workspace_id: null, current_branch: "main", palace_current_slug: null, palace_action_menu: null, palace_nav_history: [], palace_last_results: [], palace_room_manifest: null, palace_npc_conversation: null, shown_tips: new Set() });
+  const defaultCtx = (): SessionContext => ({ workspace_id: null, current_branch: "main", palace_current_slug: null, palace_action_menu: null, palace_nav_history: [], palace_last_results: [], palace_room_manifest: null, palace_npc_conversation: null, palace_scroll_pile: null, shown_tips: new Set() });
   if (!_currentSessionId) return defaultCtx();
   let ctx = sessions.get(_currentSessionId);
   if (!ctx) {
@@ -347,6 +353,7 @@ function _palaceNavigate(ctx: SessionContext, newSlug: string, room: PalaceRoom)
   ctx.palace_last_results = [];
   ctx.palace_room_manifest = null;
   ctx.palace_npc_conversation = null;
+  ctx.palace_scroll_pile = null;
 }
 
 function _reachableStates(genusDef: { transitions: { from: string; to: string }[] }, from: string): string[] {
@@ -1111,7 +1118,7 @@ function _summarizeDialogueTree(dialogue: PalaceDialogueNode[]): string {
   return lines.join("\n");
 }
 
-function _renderActionMenu(room: PalaceRoom, scrolls?: PalaceScroll[], opts?: { queryResults?: { id: string; name: string }[]; hasHistory?: boolean }): string {
+function _renderActionMenu(room: PalaceRoom, scrolls?: PalaceScroll[], opts?: { queryResults?: { id: string; name: string }[]; hasHistory?: boolean; totalScrolls?: number }): string {
   const lines: string[] = ["Actions:"];
   for (let i = 0; i < room.actions.length; i++) {
     lines.push(`  ${i + 1}. ${room.actions[i].label}`);
@@ -1124,8 +1131,14 @@ function _renderActionMenu(room: PalaceRoom, scrolls?: PalaceScroll[], opts?: { 
   }
   if (scrolls && scrolls.length > 0) {
     lines.push("  \u2500\u2500\u2500\u2500\u2500");
-    for (let i = 0; i < scrolls.length && i < 10; i++) {
+    const hasPile = (opts?.totalScrolls ?? 0) > 10;
+    const displayCount = hasPile ? Math.min(scrolls.length, 9) : Math.min(scrolls.length, 10);
+    for (let i = 0; i < displayCount; i++) {
       lines.push(`  ${81 + i}. Read: ${scrolls[i].title}`);
+    }
+    if (hasPile) {
+      const olderCount = opts!.totalScrolls! - displayCount;
+      lines.push(`  90. Rummage through the pile of scrolls (${olderCount} older)`);
     }
   }
   lines.push("  \u2500\u2500\u2500\u2500\u2500");
@@ -1206,7 +1219,7 @@ function _renderRoom(room: PalaceRoom, scrollsResult: PalaceScrollsResult): stri
   if (kernel.currentWorkspace) {
     const npcsInRoom = palaceListNPCsInRoom(kernel, kernel.currentWorkspace, room.slug);
     if (npcsInRoom.length > 0) {
-      lines.push(`NPCs: ${npcsInRoom.map(n => n.name).join(", ")}`);
+      lines.push(`NPCs: ${npcsInRoom.map(n => `${n.name} (${n.slug})`).join(", ")}`);
       lines.push("");
     }
   }
@@ -1214,7 +1227,7 @@ function _renderRoom(room: PalaceRoom, scrollsResult: PalaceScrollsResult): stri
   // Store manifest in session for verb resolution
   const ctx = _currentSessionId ? _getSessionContext() : null;
   if (ctx) ctx.palace_room_manifest = manifest;
-  lines.push(_renderActionMenu(room, scrollsResult.scrolls, { hasHistory: (ctx?.palace_nav_history.length ?? 0) > 0 }));
+  lines.push(_renderActionMenu(room, scrollsResult.scrolls, { totalScrolls: scrollsResult.total, hasHistory: (ctx?.palace_nav_history.length ?? 0) > 0 }));
   return lines.join("\n");
 }
 
@@ -5890,10 +5903,16 @@ mcp.tool("add_dialogue", {
     },
     required: ["npc", "nodes"],
   },
-  handler: async ({ npc, nodes: rawNodes }: { npc: string; nodes: unknown[] }) => {
+  handler: async ({ npc: npcSlug, nodes: rawNodes }: { npc: string; nodes: unknown[] }) => {
     _requireWorkspace();
     const nodes = _normalizeDialogueNodes(rawNodes);
-    const updated = palaceAddDialogue(kernel, kernel.currentWorkspace!, npc, nodes);
+    const existing = palaceGetNPC(kernel, kernel.currentWorkspace!, npcSlug);
+    if (!existing) {
+      const allNpcs = palaceListNPCs(kernel, kernel.currentWorkspace!);
+      const slugList = allNpcs.map(n => `  ${n.slug} (${n.name}, room: ${n.room_slug})`).join("\n");
+      throw new Error(`NPC not found: "${npcSlug}". Available NPCs:\n${slugList || "  (none)"}`);
+    }
+    const updated = palaceAddDialogue(kernel, kernel.currentWorkspace!, npcSlug, nodes);
     const summary: Record<string, unknown> = {
       npc: updated.slug, name: updated.name,
       dialogue_nodes: updated.dialogue.length,
@@ -5943,6 +5962,16 @@ function _renderNpcConversation(conv: NpcConversationState, responseText?: strin
   lines.push("");
   for (const opt of conv.visible_options) {
     lines.push(`  ${opt.index}. ${opt.prompt}`);
+  }
+  lines.push("  0. Step away");
+  return lines.join("\n");
+}
+
+function _renderScrollPile(pile: ScrollPileState): string {
+  const lines: string[] = [];
+  lines.push(`\u2500\u2500 Pile of Scrolls (${pile.scrolls.length} scrolls) \u2500\u2500`);
+  for (let i = 0; i < pile.scrolls.length; i++) {
+    lines.push(`  ${i + 1}. ${pile.scrolls[i].title} \u2014 ${_relativeTime(pile.scrolls[i].created_at)}`);
   }
   lines.push("  0. Step away");
   return lines.join("\n");
@@ -6109,7 +6138,7 @@ mcp.tool("palace_action", {
 
       const currentRoom = palaceGetRoom(kernel, kernel.currentWorkspace!, ctx.palace_current_slug)!;
       const scrollsResult = palaceGetScrolls(kernel, kernel.currentWorkspace!, ctx.palace_current_slug, { limit: 10 });
-      const actionMenu = () => _renderActionMenu(currentRoom, scrollsResult.scrolls, { queryResults: ctx.palace_last_results, hasHistory: ctx.palace_nav_history.length > 0 });
+      const actionMenu = () => _renderActionMenu(currentRoom, scrollsResult.scrolls, { totalScrolls: scrollsResult.total, queryResults: ctx.palace_last_results, hasHistory: ctx.palace_nav_history.length > 0 });
 
       switch (parsed.verb) {
         case "look": {
@@ -6273,6 +6302,22 @@ mcp.tool("palace_action", {
       throw new Error(`Invalid dialogue option: ${action}. Choose 1-${conv.visible_options.length} or 0 to step away.`);
     }
 
+    // Scroll pile sub-mode — browsing all scrolls
+    if (ctx.palace_scroll_pile) {
+      const pile = ctx.palace_scroll_pile;
+      if (action === 0) {
+        ctx.palace_scroll_pile = null;
+        const currentRoom = palaceGetRoom(kernel, kernel.currentWorkspace!, ctx.palace_current_slug)!;
+        const scrollsResult = palaceGetScrolls(kernel, kernel.currentWorkspace!, ctx.palace_current_slug, { limit: 10 });
+        return _renderRoom(currentRoom, scrollsResult);
+      }
+      if (action >= 1 && action <= pile.scrolls.length) {
+        const scroll = pile.scrolls[action - 1];
+        return `\u2500\u2500 ${scroll.title} \u2500\u2500\n${_relativeTime(scroll.created_at)}\n\n${scroll.body}\n\n${_renderScrollPile(pile)}`;
+      }
+      throw new Error(`Choose 1-${pile.scrolls.length} to read a scroll, or 0 to step away.`);
+    }
+
     // Entity drilldown actions (61-80) — view full details of last query result
     if (action >= 61 && action <= 80) {
       const resultIndex = action - 61;
@@ -6283,17 +6328,27 @@ mcp.tool("palace_action", {
       const genusDef = getGenusDef(kernel, resRow.genus_id);
       const currentRoom = palaceGetRoom(kernel, kernel.currentWorkspace!, ctx.palace_current_slug)!;
       const scrollsResult = palaceGetScrolls(kernel, kernel.currentWorkspace!, ctx.palace_current_slug, { limit: 10 });
-      return `\u2500\u2500 ${genusDef.meta.name}: ${getEntityDisplayName(kernel, entityId)} \u2500\u2500\n${JSON.stringify(state, null, 2)}\n\n${_renderActionMenu(currentRoom, scrollsResult.scrolls, { queryResults: ctx.palace_last_results, hasHistory: ctx.palace_nav_history.length > 0 })}`;
+      return `\u2500\u2500 ${genusDef.meta.name}: ${getEntityDisplayName(kernel, entityId)} \u2500\u2500\n${JSON.stringify(state, null, 2)}\n\n${_renderActionMenu(currentRoom, scrollsResult.scrolls, { totalScrolls: scrollsResult.total, queryResults: ctx.palace_last_results, hasHistory: ctx.palace_nav_history.length > 0 })}`;
     }
 
     // Scroll reading actions (81-90)
     if (action >= 81 && action <= 90) {
-      const scrollIndex = action - 81;
       const scrollsResult = palaceGetScrolls(kernel, kernel.currentWorkspace!, ctx.palace_current_slug, { limit: 10 });
-      if (scrollIndex >= scrollsResult.scrolls.length) throw new Error(`No scroll at action ${action}. This room has ${scrollsResult.scrolls.length} scroll${scrollsResult.scrolls.length === 1 ? "" : "s"}.`);
-      const scroll = scrollsResult.scrolls[scrollIndex];
       const currentRoom = palaceGetRoom(kernel, kernel.currentWorkspace!, ctx.palace_current_slug)!;
-      return `\u2500\u2500 ${scroll.title} \u2500\u2500\n${_relativeTime(scroll.created_at)}\n\n${scroll.body}\n\n${_renderActionMenu(currentRoom, scrollsResult.scrolls, { hasHistory: ctx.palace_nav_history.length > 0 })}`;
+
+      // Action 90 with > 10 scrolls = enter pile sub-mode
+      if (action === 90 && scrollsResult.total > 10) {
+        const allScrolls = palaceGetScrolls(kernel, kernel.currentWorkspace!, ctx.palace_current_slug, { limit: scrollsResult.total });
+        ctx.palace_scroll_pile = { scrolls: allScrolls.scrolls };
+        return _renderScrollPile(ctx.palace_scroll_pile);
+      }
+
+      const hasPile = scrollsResult.total > 10;
+      const maxDirect = hasPile ? 9 : 10;
+      const scrollIndex = action - 81;
+      if (scrollIndex >= Math.min(scrollsResult.scrolls.length, maxDirect)) throw new Error(`No scroll at action ${action}. This room has ${scrollsResult.scrolls.length} scroll${scrollsResult.scrolls.length === 1 ? "" : "s"}.`);
+      const scroll = scrollsResult.scrolls[scrollIndex];
+      return `\u2500\u2500 ${scroll.title} \u2500\u2500\n${_relativeTime(scroll.created_at)}\n\n${scroll.body}\n\n${_renderActionMenu(currentRoom, scrollsResult.scrolls, { totalScrolls: scrollsResult.total, hasHistory: ctx.palace_nav_history.length > 0 })}`;
     }
 
     // Global actions
@@ -6374,7 +6429,7 @@ mcp.tool("palace_action", {
       palaceDeleteRoom(kernel, kernel.currentWorkspace!, params);
       const currentRoom = palaceGetRoom(kernel, kernel.currentWorkspace!, ctx.palace_current_slug)!;
       const scrollsResult = palaceGetScrolls(kernel, kernel.currentWorkspace!, ctx.palace_current_slug, { limit: 10 });
-      return `Deleted room '${params}'. Portals and scrolls cleaned up.\n\n${_renderActionMenu(currentRoom, scrollsResult.scrolls, { hasHistory: ctx.palace_nav_history.length > 0 })}`;
+      return `Deleted room '${params}'. Portals and scrolls cleaned up.\n\n${_renderActionMenu(currentRoom, scrollsResult.scrolls, { totalScrolls: scrollsResult.total, hasHistory: ctx.palace_nav_history.length > 0 })}`;
     }
 
     // Room-specific actions (1-indexed)
@@ -6413,7 +6468,7 @@ mcp.tool("palace_action", {
         const result = await _executePalaceQuery(act.tool!, act.tool_params ?? {}, params);
         const currentRoom = palaceGetRoom(kernel, kernel.currentWorkspace!, ctx.palace_current_slug);
         const scrollsResult = palaceGetScrolls(kernel, kernel.currentWorkspace!, ctx.palace_current_slug, { limit: 10 });
-        return `${act.label}:\n\n${result}\n\n${_renderActionMenu(currentRoom!, scrollsResult.scrolls, { queryResults: ctx.palace_last_results, hasHistory: ctx.palace_nav_history.length > 0 })}`;
+        return `${act.label}:\n\n${result}\n\n${_renderActionMenu(currentRoom!, scrollsResult.scrolls, { totalScrolls: scrollsResult.total, queryResults: ctx.palace_last_results, hasHistory: ctx.palace_nav_history.length > 0 })}`;
       }
       case "text": {
         const currentRoom = palaceGetRoom(kernel, kernel.currentWorkspace!, ctx.palace_current_slug);
